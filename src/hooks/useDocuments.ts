@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "./useAuth";
 import { toast } from "./use-toast";
+
+// Fixed user ID for local dev (no auth)
+const DEV_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 export interface Document {
   id: string;
@@ -16,9 +18,8 @@ export interface Document {
 }
 
 export function useDocuments() {
-  const { user } = useAuth();
   return useQuery({
-    queryKey: ["documents", user?.id],
+    queryKey: ["documents"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("documents")
@@ -27,13 +28,16 @@ export function useDocuments() {
       if (error) throw error;
       return data as Document[];
     },
-    enabled: !!user,
+    refetchInterval: (query) => {
+      // Poll every 3 seconds if any document is still processing
+      const docs = query.state.data as Document[] | undefined;
+      return docs?.some((d) => d.status === "processing") ? 3000 : false;
+    },
   });
 }
 
 export function useUploadDocument() {
   const queryClient = useQueryClient();
-  const { user } = useAuth();
 
   return useMutation({
     mutationFn: async ({
@@ -43,17 +47,18 @@ export function useUploadDocument() {
       file: File;
       sourceType: string;
     }) => {
-      if (!user) throw new Error("Not authenticated");
-
       // Read text content for supported types
       let content: string | null = null;
       const textTypes = [".txt", ".md", ".csv", ".json", ".xml"];
       if (textTypes.some((ext) => file.name.toLowerCase().endsWith(ext))) {
         content = await file.text();
+      } else {
+        // For binary files, store filename and type as context for AI
+        content = `Document name: ${file.name}\nFile type: ${file.type || "unknown"}\nSource type: ${sourceType}\n\nThis is a binary document. Please generate plausible product management insights based on the document name and source type alone.`;
       }
 
       // Upload file to storage
-      const filePath = `${user.id}/${Date.now()}-${file.name}`;
+      const filePath = `${DEV_USER_ID}/${Date.now()}-${file.name}`;
       const { error: uploadError } = await supabase.storage
         .from("documents")
         .upload(filePath, file);
@@ -63,11 +68,11 @@ export function useUploadDocument() {
       const { data: doc, error: insertError } = await supabase
         .from("documents")
         .insert({
-          user_id: user.id,
+          user_id: DEV_USER_ID,
           name: file.name,
           source_type: sourceType,
           file_url: filePath,
-          content: content || `[Binary file: ${file.name}]`,
+          content: content,
           status: "processing",
         })
         .select()

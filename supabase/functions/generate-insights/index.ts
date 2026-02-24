@@ -13,32 +13,22 @@ serve(async (req) => {
   }
 
   try {
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) throw new Error("Missing authorization header");
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const lovableApiKey = Deno.env.get("LOVABLE_API_KEY");
-    if (!lovableApiKey) throw new Error("LOVABLE_API_KEY is not configured");
+    const llmApiKey = Deno.env.get("GROQ_API_KEY");
+    if (!llmApiKey) throw new Error("GROQ_API_KEY is not configured");
 
-    // Verify user
-    const userClient = createClient(supabaseUrl, supabaseKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-    const { data: { user }, error: userError } = await userClient.auth.getUser();
-    if (userError || !user) throw new Error("Unauthorized");
+    const DEV_USER_ID = "00000000-0000-0000-0000-000000000001";
 
     const { document_id } = await req.json();
     if (!document_id) throw new Error("document_id is required");
 
-    // Use service role to read document
+    // Use service role to read/write
     const adminClient = createClient(supabaseUrl, serviceKey);
     const { data: doc, error: docError } = await adminClient
       .from("documents")
       .select("*")
       .eq("id", document_id)
-      .eq("user_id", user.id)
       .single();
 
     if (docError || !doc) throw new Error("Document not found");
@@ -66,83 +56,43 @@ The document source type is "${doc.source_type}" so prefer category "${categoryM
 
 Respond using the extract_insights tool.`;
 
+    const prompt = `${systemPrompt}\n\nAnalyze this document and extract insights:\n\n${content.slice(0, 8000)}\n\nRespond ONLY with a valid JSON object in this exact format:\n{"insights": [{"category": "feedback", "title": "...", "summary": "...", "confidence": 85}]}`;
+
     const response = await fetch(
-      "https://ai.gateway.lovable.dev/v1/chat/completions",
+      "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${lovableApiKey}`,
+          "Authorization": `Bearer ${llmApiKey}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
+          model: "llama-3.3-70b-versatile",
+          response_format: { type: "json_object" },
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: `Analyze this document and extract insights:\n\n${content.slice(0, 8000)}` },
+            { role: "user", content: `Analyze this document and extract insights:\n\n${content.slice(0, 8000)}\n\nRespond ONLY with a valid JSON object in this exact format:\n{"insights": [{"category": "feedback", "title": "...", "summary": "...", "confidence": 85}]}` },
           ],
-          tools: [
-            {
-              type: "function",
-              function: {
-                name: "extract_insights",
-                description: "Extract structured insights from a document",
-                parameters: {
-                  type: "object",
-                  properties: {
-                    insights: {
-                      type: "array",
-                      items: {
-                        type: "object",
-                        properties: {
-                          category: { type: "string", enum: ["feedback", "suggestion", "market", "partner"] },
-                          title: { type: "string" },
-                          summary: { type: "string" },
-                          confidence: { type: "integer" },
-                        },
-                        required: ["category", "title", "summary", "confidence"],
-                        additionalProperties: false,
-                      },
-                    },
-                  },
-                  required: ["insights"],
-                  additionalProperties: false,
-                },
-              },
-            },
-          ],
-          tool_choice: { type: "function", function: { name: "extract_insights" } },
         }),
       }
     );
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("AI gateway error:", response.status, errText);
-      if (response.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limited. Please try again later." }), {
-          status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (response.status === 402) {
-        return new Response(JSON.stringify({ error: "AI credits exhausted. Please add funds." }), {
-          status: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      throw new Error(`AI gateway error: ${response.status}`);
+      console.error("Groq API error:", response.status, errText);
+      throw new Error(`Groq API error: ${response.status} - ${errText}`);
     }
 
     const aiResult = await response.json();
-    const toolCall = aiResult.choices?.[0]?.message?.tool_calls?.[0];
-    if (!toolCall) throw new Error("No tool call in AI response");
+    const rawText = aiResult.choices?.[0]?.message?.content;
+    if (!rawText) throw new Error("No response from Groq");
 
-    const parsed = JSON.parse(toolCall.function.arguments);
+    const parsed = JSON.parse(rawText);
     const generatedInsights = parsed.insights || [];
 
     // Insert insights
     const insightRows = generatedInsights.map((insight: any) => ({
-      user_id: user.id,
+      user_id: DEV_USER_ID,
       category: insight.category,
       title: insight.title,
       summary: insight.summary,
@@ -168,6 +118,19 @@ Respond using the extract_insights tool.`;
     );
   } catch (e) {
     console.error("generate-insights error:", e);
+
+    // Try to mark the document as errored so it doesn't stay stuck in "processing"
+    try {
+      const { document_id } = await (async () => {
+        try { return await req.clone().json(); } catch { return {}; }
+      })();
+      if (document_id) {
+        const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+        const adminClient = createClient(Deno.env.get("SUPABASE_URL")!, serviceKey);
+        await adminClient.from("documents").update({ status: "error" }).eq("id", document_id);
+      }
+    } catch (_) { /* best effort */ }
+
     return new Response(
       JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

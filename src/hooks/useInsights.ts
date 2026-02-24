@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "./useAuth";
 
 export interface Insight {
   id: string;
@@ -15,9 +14,8 @@ export interface Insight {
 }
 
 export function useInsights() {
-  const { user } = useAuth();
   return useQuery({
-    queryKey: ["insights", user?.id],
+    queryKey: ["insights"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("insights")
@@ -26,6 +24,6 @@ export function useInsights() {
       if (error) throw error;
       return data as Insight[];
     },
-    enabled: !!user,
+    refetchInterval: 5000, // Poll every 5 seconds to catch new insights
   });
 }
