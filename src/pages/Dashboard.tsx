@@ -1,46 +1,22 @@
 import { motion } from "framer-motion";
-import { FileText, Lightbulb, MessageSquare, TrendingUp, Upload, ArrowRight } from "lucide-react";
+import { FileText, Lightbulb, MessageSquare, TrendingUp, Upload, ArrowRight, LogOut } from "lucide-react";
 import { Link } from "react-router-dom";
-
-const stats = [
-  { label: "Documents Ingested", value: "128", icon: FileText, change: "+12 this week" },
-  { label: "Insights Generated", value: "47", icon: Lightbulb, change: "+8 this week" },
-  { label: "Feedback Items", value: "312", icon: MessageSquare, change: "+23 this week" },
-  { label: "Trends Identified", value: "15", icon: TrendingUp, change: "+3 this week" },
-];
-
-const recentInsights = [
-  {
-    category: "Current Design Feedback",
-    summary: "Users report difficulty navigating between dashboard views. 73% of feedback mentions improved filtering as a top request.",
-    tag: "feedback",
-    time: "2 hours ago",
-  },
-  {
-    category: "Suggestions for Future Releases",
-    summary: "AI-powered auto-categorization of support tickets could reduce PM triage time by 40%, based on partner team analysis.",
-    tag: "suggestion",
-    time: "5 hours ago",
-  },
-  {
-    category: "Market Intelligence",
-    summary: "Gartner's latest report highlights a 28% YoY increase in demand for integrated PM tooling with AI capabilities.",
-    tag: "market",
-    time: "1 day ago",
-  },
-  {
-    category: "Partner Insights",
-    summary: "Sales team reports enterprise clients requesting bulk export and API access for generated insights.",
-    tag: "partner",
-    time: "2 days ago",
-  },
-];
+import { useDocuments } from "@/hooks/useDocuments";
+import { useInsights } from "@/hooks/useInsights";
+import { useAuth } from "@/hooks/useAuth";
 
 const tagColors: Record<string, string> = {
   feedback: "bg-category-feedback/10 text-category-feedback",
   suggestion: "bg-category-suggestion/10 text-category-suggestion",
   market: "bg-category-market/10 text-category-market",
   partner: "bg-category-partner/10 text-category-partner",
+};
+
+const tagLabels: Record<string, string> = {
+  feedback: "Design Feedback",
+  suggestion: "Future Release",
+  market: "Market Intel",
+  partner: "Partner Insight",
 };
 
 const container = {
@@ -54,12 +30,35 @@ const item = {
 };
 
 export default function Dashboard() {
+  const { data: documents } = useDocuments();
+  const { data: insights } = useInsights();
+  const { signOut } = useAuth();
+
+  const docCount = documents?.length || 0;
+  const insightCount = insights?.length || 0;
+  const feedbackCount = insights?.filter((i) => i.category === "feedback").length || 0;
+  const categories = new Set(insights?.map((i) => i.category) || []);
+
+  const stats = [
+    { label: "Documents Ingested", value: String(docCount), icon: FileText, change: "Total uploaded" },
+    { label: "Insights Generated", value: String(insightCount), icon: Lightbulb, change: "AI-generated" },
+    { label: "Feedback Items", value: String(feedbackCount), icon: MessageSquare, change: "From documents" },
+    { label: "Categories Active", value: String(categories.size), icon: TrendingUp, change: "Insight categories" },
+  ];
+
+  const recentInsights = (insights || []).slice(0, 4);
+
   return (
     <div className="p-6 lg:p-10 max-w-6xl">
       {/* Header */}
-      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-        <h1 className="font-display text-2xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground mt-1 text-sm">Your product intelligence at a glance.</p>
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground mt-1 text-sm">Your product intelligence at a glance.</p>
+        </div>
+        <button onClick={signOut} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <LogOut className="h-3.5 w-3.5" /> Sign out
+        </button>
       </motion.div>
 
       {/* Stats */}
@@ -117,23 +116,29 @@ export default function Dashboard() {
       {/* Recent insights */}
       <div>
         <h2 className="font-display text-lg font-semibold mb-4">Recent Insights</h2>
-        <motion.div variants={container} initial="hidden" animate="show" className="space-y-3">
-          {recentInsights.map((insight, i) => (
-            <motion.div
-              key={i}
-              variants={item}
-              className="rounded-xl border bg-card p-5 shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-card-hover)] transition-shadow"
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${tagColors[insight.tag]}`}>
-                  {insight.category}
-                </span>
-                <span className="text-[11px] text-muted-foreground ml-auto">{insight.time}</span>
-              </div>
-              <p className="text-sm leading-relaxed">{insight.summary}</p>
-            </motion.div>
-          ))}
-        </motion.div>
+        {recentInsights.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-8 text-center">No insights yet. Upload documents to get started.</p>
+        ) : (
+          <motion.div variants={container} initial="hidden" animate="show" className="space-y-3">
+            {recentInsights.map((insight) => (
+              <motion.div
+                key={insight.id}
+                variants={item}
+                className="rounded-xl border bg-card p-5 shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-card-hover)] transition-shadow"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${tagColors[insight.category] || ""}`}>
+                    {tagLabels[insight.category] || insight.category}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground ml-auto">
+                    {new Date(insight.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+                <p className="text-sm leading-relaxed">{insight.summary}</p>
+              </motion.div>
+            ))}
+          </motion.div>
+        )}
       </div>
     </div>
   );
